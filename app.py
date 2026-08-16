@@ -128,6 +128,17 @@ def delete_unpaid_day(unpaid_id):
     get_supabase().table("unpaid_days").delete().eq("id", int(unpaid_id)).execute()
 
 
+def delete_employee(employee_id):
+    employee_id = int(employee_id)
+
+    # Delete related records first so no employee history is left behind.
+    get_supabase().table("advances").delete().eq("employee_id", employee_id).execute()
+    get_supabase().table("unpaid_days").delete().eq("employee_id", employee_id).execute()
+
+    # Finally delete the employee record itself.
+    get_supabase().table("employees").delete().eq("id", employee_id).execute()
+
+
 def get_employees():
     response = (
         get_supabase()
@@ -557,6 +568,26 @@ def employee_page():
                     st.success("Employee details updated.")
                     st.rerun()
         st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
+
+        st.divider()
+        st.warning(
+            "Deleting an employee is permanent and will also delete all of their "
+            "advances and unpaid-day records."
+        )
+        confirm_delete = st.checkbox(
+            f"I confirm that I want to permanently delete {emp['name']}",
+            key=f"confirm_delete_employee_{employee_id}",
+        )
+        if st.button(
+            "🗑️ Delete Employee",
+            type="secondary",
+            use_container_width=True,
+            disabled=not confirm_delete,
+            key=f"delete_employee_{employee_id}",
+        ):
+            delete_employee(employee_id)
+            st.success(f"{emp['name']} has been deleted.")
+            st.rerun()
 
     with tabs[5]:
         st.download_button(
