@@ -91,6 +91,27 @@ def add_unpaid_day(employee_id, leave_date, note=""):
     }, on_conflict="employee_id,leave_date").execute()
 
 
+def add_unpaid_range(employee_id, start_date, end_date, note=""):
+    """Mark every calendar day from start_date through end_date as unpaid."""
+    if end_date < start_date:
+        raise ValueError("End date cannot be before start date.")
+
+    rows = []
+    current = start_date
+    while current <= end_date:
+        rows.append({
+            "employee_id": int(employee_id),
+            "leave_date": current.isoformat(),
+            "note": note.strip(),
+        })
+        current += timedelta(days=1)
+
+    get_supabase().table("unpaid_days").upsert(
+        rows, on_conflict="employee_id,leave_date"
+    ).execute()
+    return len(rows)
+
+
 def remove_unpaid_day(employee_id, leave_date):
     (
         get_supabase()
@@ -356,7 +377,7 @@ def quick_actions(employees, key_prefix="home"):
 
     choices = employee_choices(employees)
     st.subheader("Quick Entry")
-    action = st.radio("What do you want to add?", ["Advance", "Unpaid day"], horizontal=True, key=f"{key_prefix}_action")
+    action = st.radio("What do you want to add?", ["Advance", "Unpaid day / range"], horizontal=True, key=f"{key_prefix}_action")
 
     if action == "Advance":
         with st.form(f"{key_prefix}_advance", clear_on_submit=True):
@@ -382,18 +403,39 @@ def quick_actions(employees, key_prefix="home"):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_leave_emp")
             emp = get_employee(choices[employee_name])
             joining = date.fromisoformat(emp["joining_date"])
-            leave_date = st.date_input(
-                "Unpaid date",
-                value=date.today(),
-                min_value=joining,
-                max_value=date.today(),
-                key=f"{key_prefix}_leave_date",
-            )
+
+            c1, c2 = st.columns(2)
+            with c1:
+                start_date = st.date_input(
+                    "Start date",
+                    value=date.today(),
+                    min_value=joining,
+                    key=f"{key_prefix}_leave_start",
+                )
+            with c2:
+                end_date = st.date_input(
+                    "End date",
+                    value=date.today(),
+                    min_value=joining,
+                    key=f"{key_prefix}_leave_end",
+                )
+
+            st.caption("For a single unpaid day, choose the same Start date and End date.")
             note = st.text_input("Reason / note (optional)", key=f"{key_prefix}_leave_note")
-            if st.form_submit_button("Save Unpaid Day", type="primary", use_container_width=True):
-                add_unpaid_day(choices[employee_name], leave_date, note)
-                st.success(f"{leave_date.strftime('%d %b %Y')} marked unpaid.")
-                st.rerun()
+
+            if st.form_submit_button("Save Unpaid Holiday", type="primary", use_container_width=True):
+                if end_date < start_date:
+                    st.error("End date cannot be before the start date.")
+                else:
+                    days_added = add_unpaid_range(choices[employee_name], start_date, end_date, note)
+                    if days_added == 1:
+                        st.success(f"{start_date.strftime('%d %b %Y')} marked unpaid.")
+                    else:
+                        st.success(
+                            f"{days_added} days marked unpaid: "
+                            f"{start_date.strftime('%d %b %Y')} to {end_date.strftime('%d %b %Y')}."
+                        )
+                    st.rerun()
 
 
 def dashboard_page():
