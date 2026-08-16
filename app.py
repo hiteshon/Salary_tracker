@@ -1,110 +1,31 @@
-import os
-import sqlite3
 from datetime import date, datetime, timedelta
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
-
-DB_PATH = os.path.join(os.path.dirname(__file__), "salary_tracker.db")
-
-
-def get_connection():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    return conn
+from supabase import create_client, Client
 
 
-def init_db():
-    with get_connection() as conn:
-        conn.executescript(
-            """
-            PRAGMA foreign_keys = ON;
 
-            CREATE TABLE IF NOT EXISTS employees (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                joining_date TEXT NOT NULL,
-                daily_salary REAL NOT NULL CHECK(daily_salary >= 0),
-                active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );
-
-            CREATE TABLE IF NOT EXISTS unpaid_days (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER NOT NULL,
-                leave_date TEXT NOT NULL,
-                note TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(employee_id, leave_date),
-                FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE
-            );
-
-            CREATE TABLE IF NOT EXISTS advances (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                employee_id INTEGER NOT NULL,
-                advance_date TEXT NOT NULL,
-                amount REAL NOT NULL CHECK(amount > 0),
-                category TEXT NOT NULL CHECK(category IN ('Small Advance', 'Large Advance')),
-                note TEXT,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE
-            );
-            """
-        )
-        conn.commit()
+@st.cache_resource
+def get_supabase() -> Client:
+    """Create one Supabase client using secrets stored in Streamlit Cloud."""
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except KeyError as exc:
+        raise RuntimeError(
+            "Missing Supabase secrets. Add SUPABASE_URL and SUPABASE_KEY "
+            "in Streamlit Community Cloud → App settings → Secrets."
+        ) from exc
+    return create_client(url, key)
 
 
-def seed_sample_data():
-    with get_connection() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0]
-        if count > 0:
-            return
-
-        today = date.today()
-        samples = [
-            ("Amit Sharma", today - timedelta(days=35), 850.0, 1),
-            ("Priya Verma", today - timedelta(days=22), 1000.0, 1),
-            ("Rakesh Kumar", today - timedelta(days=50), 725.0, 1),
-            ("Sunita Devi", today - timedelta(days=15), 900.0, 1),
-            ("Imran Khan", today - timedelta(days=80), 1100.0, 0),
-        ]
-        for name, joining, salary, active in samples:
-            conn.execute(
-                "INSERT INTO employees (name, joining_date, daily_salary, active) VALUES (?, ?, ?, ?)",
-                (name, joining.isoformat(), salary, active),
-            )
-        conn.commit()
-
-        ids = {
-            row["name"]: row["id"]
-            for row in conn.execute("SELECT id, name FROM employees").fetchall()
-        }
-        leaves = [
-            (ids["Amit Sharma"], today - timedelta(days=10), "Unpaid leave"),
-            (ids["Priya Verma"], today - timedelta(days=5), "Holiday"),
-            (ids["Rakesh Kumar"], today - timedelta(days=20), "Personal leave"),
-        ]
-        for emp_id, d, note in leaves:
-            conn.execute(
-                "INSERT OR IGNORE INTO unpaid_days (employee_id, leave_date, note) VALUES (?, ?, ?)",
-                (emp_id, d.isoformat(), note),
-            )
-
-        advs = [
-            (ids["Amit Sharma"], today - timedelta(days=18), 2500.0, "Travel advance"),
-            (ids["Amit Sharma"], today - timedelta(days=3), 7000.0, "Family expense"),
-            (ids["Priya Verma"], today - timedelta(days=9), 3500.0, "Advance"),
-            (ids["Rakesh Kumar"], today - timedelta(days=25), 5000.0, "Advance"),
-            (ids["Sunita Devi"], today - timedelta(days=2), 1500.0, "Advance"),
-        ]
-        for emp_id, d, amount, note in advs:
-            category = classify_advance(amount)
-            conn.execute(
-                "INSERT INTO advances (employee_id, advance_date, amount, category, note) VALUES (?, ?, ?, ?, ?)",
-                (emp_id, d.isoformat(), amount, category, note),
-            )
-        conn.commit()
+def _df(rows, columns=None):
+    """Convert Supabase response rows to a DataFrame with stable columns."""
+    if rows:
+        return pd.DataFrame(rows)
+    return pd.DataFrame(columns=columns or [])
 
 
 def classify_advance(amount):
@@ -130,125 +51,155 @@ def rupee(value):
 
 
 def add_employee(name, joining_date, daily_salary, active=True):
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO employees (name, joining_date, daily_salary, active) VALUES (?, ?, ?, ?)",
-            (name.strip(), joining_date.isoformat(), float(daily_salary), int(active)),
-        )
-        conn.commit()
+    get_supabase().table("employees").insert({
+        "name": name.strip(),
+        "joining_date": joining_date.isoformat(),
+        "daily_salary": float(daily_salary),
+        "active": bool(active),
+    }).execute()
 
 
 def update_employee(employee_id, name, joining_date, daily_salary, active):
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE employees SET name=?, joining_date=?, daily_salary=?, active=? WHERE id=?",
-            (name.strip(), joining_date.isoformat(), float(daily_salary), int(active), employee_id),
-        )
-        conn.commit()
+    get_supabase().table("employees").update({
+        "name": name.strip(),
+        "joining_date": joining_date.isoformat(),
+        "daily_salary": float(daily_salary),
+        "active": bool(active),
+    }).eq("id", int(employee_id)).execute()
 
 
 def add_advance(employee_id, advance_date, amount, note=""):
     category = classify_advance(amount)
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO advances (employee_id, advance_date, amount, category, note) VALUES (?, ?, ?, ?, ?)",
-            (employee_id, advance_date.isoformat(), float(amount), category, note.strip()),
-        )
-        conn.commit()
+    get_supabase().table("advances").insert({
+        "employee_id": int(employee_id),
+        "advance_date": advance_date.isoformat(),
+        "amount": float(amount),
+        "category": category,
+        "note": note.strip(),
+    }).execute()
     return category
 
 
 def add_unpaid_day(employee_id, leave_date, note=""):
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO unpaid_days (employee_id, leave_date, note) VALUES (?, ?, ?)",
-            (employee_id, leave_date.isoformat(), note.strip()),
-        )
-        conn.commit()
+    # employee_id + leave_date is unique in Supabase.
+    # Upsert makes this behave like the old SQLite INSERT OR REPLACE.
+    get_supabase().table("unpaid_days").upsert({
+        "employee_id": int(employee_id),
+        "leave_date": leave_date.isoformat(),
+        "note": note.strip(),
+    }, on_conflict="employee_id,leave_date").execute()
 
 
 def remove_unpaid_day(employee_id, leave_date):
-    with get_connection() as conn:
-        conn.execute(
-            "DELETE FROM unpaid_days WHERE employee_id=? AND leave_date=?",
-            (employee_id, leave_date.isoformat()),
-        )
-        conn.commit()
+    (
+        get_supabase()
+        .table("unpaid_days")
+        .delete()
+        .eq("employee_id", int(employee_id))
+        .eq("leave_date", leave_date.isoformat())
+        .execute()
+    )
 
 
 def update_advance(advance_id, advance_date, amount, note=""):
     category = classify_advance(amount)
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE advances SET advance_date=?, amount=?, category=?, note=? WHERE id=?",
-            (advance_date.isoformat(), float(amount), category, note.strip(), advance_id),
-        )
-        conn.commit()
+    get_supabase().table("advances").update({
+        "advance_date": advance_date.isoformat(),
+        "amount": float(amount),
+        "category": category,
+        "note": note.strip(),
+    }).eq("id", int(advance_id)).execute()
     return category
 
 
 def delete_advance(advance_id):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM advances WHERE id=?", (advance_id,))
-        conn.commit()
+    get_supabase().table("advances").delete().eq("id", int(advance_id)).execute()
 
 
 def update_unpaid_day(unpaid_id, leave_date, note=""):
-    with get_connection() as conn:
-        conn.execute(
-            "UPDATE unpaid_days SET leave_date=?, note=? WHERE id=?",
-            (leave_date.isoformat(), note.strip(), unpaid_id),
-        )
-        conn.commit()
+    get_supabase().table("unpaid_days").update({
+        "leave_date": leave_date.isoformat(),
+        "note": note.strip(),
+    }).eq("id", int(unpaid_id)).execute()
 
 
 def delete_unpaid_day(unpaid_id):
-    with get_connection() as conn:
-        conn.execute("DELETE FROM unpaid_days WHERE id=?", (unpaid_id,))
-        conn.commit()
+    get_supabase().table("unpaid_days").delete().eq("id", int(unpaid_id)).execute()
 
 
 def get_employees():
-    with get_connection() as conn:
-        return pd.read_sql_query("SELECT * FROM employees ORDER BY active DESC, name", conn)
+    response = (
+        get_supabase()
+        .table("employees")
+        .select("*")
+        .order("active", desc=True)
+        .order("name")
+        .execute()
+    )
+    return _df(
+        response.data,
+        ["id", "name", "joining_date", "daily_salary", "active", "created_at"],
+    )
 
 
 def get_employee(employee_id):
-    with get_connection() as conn:
-        row = conn.execute("SELECT * FROM employees WHERE id=?", (employee_id,)).fetchone()
-        return dict(row) if row else None
+    response = (
+        get_supabase()
+        .table("employees")
+        .select("*")
+        .eq("id", int(employee_id))
+        .limit(1)
+        .execute()
+    )
+    return response.data[0] if response.data else None
 
 
 def get_unpaid_days(employee_id=None):
-    with get_connection() as conn:
-        if employee_id is None:
-            q = """
-                SELECT u.id, u.employee_id, e.name, u.leave_date, u.note
-                FROM unpaid_days u JOIN employees e ON e.id=u.employee_id
-                ORDER BY u.leave_date DESC
-            """
-            return pd.read_sql_query(q, conn)
-        return pd.read_sql_query(
-            "SELECT * FROM unpaid_days WHERE employee_id=? ORDER BY leave_date DESC",
-            conn,
-            params=(employee_id,),
-        )
+    query = get_supabase().table("unpaid_days").select("*").order("leave_date", desc=True)
+    if employee_id is not None:
+        query = query.eq("employee_id", int(employee_id))
+
+    response = query.execute()
+    df = _df(
+        response.data,
+        ["id", "employee_id", "leave_date", "note", "created_at"],
+    )
+
+    if employee_id is None and not df.empty:
+        employees = get_employees()
+        if not employees.empty:
+            names = employees[["id", "name"]].rename(columns={"id": "employee_id"})
+            df = df.merge(names, on="employee_id", how="left")
+            ordered = ["id", "employee_id", "name", "leave_date", "note"]
+            df = df[[c for c in ordered if c in df.columns]]
+    return df
 
 
 def get_advances(employee_id=None):
-    with get_connection() as conn:
-        if employee_id is None:
-            q = """
-                SELECT a.id, a.employee_id, e.name, a.advance_date, a.amount, a.category, a.note
-                FROM advances a JOIN employees e ON e.id=a.employee_id
-                ORDER BY a.advance_date DESC, a.id DESC
-            """
-            return pd.read_sql_query(q, conn)
-        return pd.read_sql_query(
-            "SELECT * FROM advances WHERE employee_id=? ORDER BY advance_date DESC, id DESC",
-            conn,
-            params=(employee_id,),
-        )
+    query = (
+        get_supabase()
+        .table("advances")
+        .select("*")
+        .order("advance_date", desc=True)
+        .order("id", desc=True)
+    )
+    if employee_id is not None:
+        query = query.eq("employee_id", int(employee_id))
+
+    response = query.execute()
+    df = _df(
+        response.data,
+        ["id", "employee_id", "advance_date", "amount", "category", "note", "created_at"],
+    )
+
+    if employee_id is None and not df.empty:
+        employees = get_employees()
+        if not employees.empty:
+            names = employees[["id", "name"]].rename(columns={"id": "employee_id"})
+            df = df.merge(names, on="employee_id", how="left")
+            ordered = ["id", "employee_id", "name", "advance_date", "amount", "category", "note"]
+            df = df[[c for c in ordered if c in df.columns]]
+    return df
 
 
 def employment_end_date(employee, as_of=None):
@@ -581,8 +532,11 @@ def employee_page():
                         update_unpaid_day(leave_id, new_date, new_note)
                         st.success("Unpaid day updated.")
                         st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("That employee already has an unpaid entry for this date.")
+                    except Exception as exc:
+                        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+                            st.error("That employee already has an unpaid entry for this date.")
+                        else:
+                            st.error(f"Could not update unpaid day: {exc}")
             if st.button("Remove This Unpaid Day", key=f"delete_leave_{leave_id}", use_container_width=True):
                 delete_unpaid_day(leave_id)
                 st.success("Unpaid day removed. Salary will count for that date again.")
@@ -615,9 +569,6 @@ def employee_page():
 
 def main():
     st.set_page_config(page_title="Salary Tracker", page_icon="₹", layout="wide")
-    init_db()
-    seed_sample_data()
-
     st.sidebar.title("₹ Salary Tracker")
     page = st.sidebar.radio("Menu", ["Home", "Employee", "Add Employee"])
     st.sidebar.caption(f"Today: {date.today().strftime('%d %b %Y')}")
