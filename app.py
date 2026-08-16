@@ -1,5 +1,6 @@
 from datetime import date, datetime, timedelta
 from io import BytesIO
+import hmac
 
 import pandas as pd
 import streamlit as st
@@ -567,8 +568,42 @@ def employee_page():
         )
 
 
+
+def check_password():
+    """Require the shared app password before showing any salary data."""
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.title("🔒 Salary Tracker")
+    st.caption("Enter the password to access this app.")
+
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login", type="primary", use_container_width=True):
+        try:
+            expected_password = st.secrets["APP_PASSWORD"]
+        except KeyError:
+            st.error(
+                "APP_PASSWORD is missing. Add it in Streamlit Community Cloud "
+                "→ App settings → Secrets."
+            )
+            return False
+
+        if hmac.compare_digest(password, expected_password):
+            st.session_state["password_correct"] = True
+            st.rerun()
+        else:
+            st.error("Incorrect password.")
+
+    return False
+
+
 def main():
     st.set_page_config(page_title="Salary Tracker", page_icon="₹", layout="wide")
+
+    if not check_password():
+        st.stop()
+
     st.sidebar.title("₹ Salary Tracker")
     page = st.sidebar.radio("Menu", ["Home", "Employee", "Add Employee"])
     st.sidebar.caption(f"Today: {date.today().strftime('%d %b %Y')}")
