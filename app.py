@@ -292,8 +292,9 @@ def employment_end_date(employee, as_of=None):
     
     # If the employee has an end date, do not calculate salary beyond it.
     end_date_str = employee.get("end_date")
-    if end_date_str:
-        emp_end = date.fromisoformat(end_date_str)
+    # Added the pd.notna() check here to prevent NaN errors!
+    if pd.notna(end_date_str) and str(end_date_str).strip():
+        emp_end = date.fromisoformat(str(end_date_str))
         return min(as_of, emp_end)
         
     return as_of
@@ -450,7 +451,8 @@ def app_header():
 
 
 def employee_choices(employees):
-    return {f"{r['name']}": int(r["id"]) for _, r in employees.iterrows()}
+    # Adding the ID ensures every dropdown option is unique, even for identical names
+    return {f"{r['name']} (ID: {r['id']})": int(r["id"]) for _, r in employees.iterrows()}
 
 
 def quick_actions(employees, key_prefix="home"):
