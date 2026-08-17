@@ -384,8 +384,9 @@ def dashboard_dataframe(as_of=None):
         totals = employee_totals(int(emp["id"]), as_of)
         
         end_str = emp.get("end_date")
-        if end_str:
-            is_active = "No" if date.fromisoformat(end_str) <= (as_of or today) else "Yes"
+        # Use pd.notna() to ensure we don't try to process NaN/None values
+        if pd.notna(end_str) and str(end_str).strip():
+            is_active = "No" if date.fromisoformat(str(end_str)) <= (as_of or today) else "Yes"
         else:
             is_active = "Yes"
             
