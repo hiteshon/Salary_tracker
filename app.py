@@ -13,9 +13,14 @@ def check_password():
         # Grabs the password from Streamlit secrets, defaults to "admin" if missing
         expected_password = st.secrets.get("password", "admin")
         
-        if st.session_state["password_input"] == expected_password:
+        # Safely get the input to prevent KeyErrors during Streamlit reruns
+        entered_password = st.session_state.get("password_input", "")
+        
+        if entered_password == expected_password:
             st.session_state["password_correct"] = True
-            del st.session_state["password_input"]  # Clean up memory
+            # Clean up memory only if the key still exists
+            if "password_input" in st.session_state:
+                del st.session_state["password_input"]
         else:
             st.session_state["password_correct"] = False
 
