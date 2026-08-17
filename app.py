@@ -613,29 +613,31 @@ def dashboard_page():
 def add_employee_page():
     app_header()
     st.subheader("Add Employee")
-    with st.form("add_employee", clear_on_submit=True):
-        name = st.text_input("Name")
-        joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today())
+    
+    # Removed the st.form wrapper so the checkbox works instantly
+    name = st.text_input("Name")
+    joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today())
+    
+    has_left = st.checkbox("Employee has stopped working")
+    if has_left:
+        end_date = st.date_input("End date", value=date.today(), max_value=date.today())
+    else:
+        end_date = None
         
-        has_left = st.checkbox("Employee has stopped working")
-        if has_left:
-            end_date = st.date_input("End date", value=date.today(), max_value=date.today())
+    daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0)
+    
+    # Changed st.form_submit_button to st.button
+    if st.button("Add Employee", type="primary", use_container_width=True):
+        if not name.strip():
+            st.error("Enter the employee name.")
+        elif daily_salary <= 0:
+            st.error("Daily salary must be more than ₹0.")
+        elif has_left and end_date < joining_date:
+            st.error("End date cannot be before joining date.")
         else:
-            end_date = None
-            
-        daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0)
-        
-        if st.form_submit_button("Add Employee", type="primary", use_container_width=True):
-            if not name.strip():
-                st.error("Enter the employee name.")
-            elif daily_salary <= 0:
-                st.error("Daily salary must be more than ₹0.")
-            elif has_left and end_date < joining_date:
-                st.error("End date cannot be before joining date.")
-            else:
-                add_employee(name, joining_date, daily_salary, end_date)
-                st.success(f"{name.strip()} added.")
-                st.rerun()
+            add_employee(name, joining_date, daily_salary, end_date)
+            st.success(f"{name.strip()} added.")
+            st.rerun()
 
 
 def employee_page():
@@ -795,43 +797,44 @@ def employee_page():
                 st.rerun()
 
     with tabs[5]:
-        with st.form("edit_employee"):
-            name = st.text_input("Name", value=emp["name"])
-            joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
+        # Removed the st.form wrapper
+        name = st.text_input("Name", value=emp["name"], key=f"edit_name_{employee_id}")
+        joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today(), key=f"edit_join_{employee_id}")
+        
+        existing_end_date = emp.get("end_date")
+        is_valid_end = pd.notna(existing_end_date) and str(existing_end_date).strip() and str(existing_end_date).lower() != "nan"
+        
+        has_left = st.checkbox("Employee stopped working", value=is_valid_end, key=f"edit_left_{employee_id}")
+        if has_left:
+            default_end = date.fromisoformat(str(existing_end_date)) if is_valid_end else date.today()
+            end_date = st.date_input("End date", value=default_end, max_value=date.today(), key=f"edit_end_{employee_id}")
+        else:
+            end_date = None
             
-            existing_end_date = emp.get("end_date")
-            is_valid_end = pd.notna(existing_end_date) and str(existing_end_date).strip() and str(existing_end_date).lower() != "nan"
-            
-            has_left = st.checkbox("Employee stopped working", value=is_valid_end)
-            if has_left:
-                default_end = date.fromisoformat(str(existing_end_date)) if is_valid_end else date.today()
-                end_date = st.date_input("End date", value=default_end, max_value=date.today())
+        salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]), key=f"edit_salary_{employee_id}")
+        
+        # Changed st.form_submit_button to st.button
+        if st.button("Save Employee Changes", type="primary", use_container_width=True, key=f"save_emp_{employee_id}"):
+            if not name.strip() or salary <= 0:
+                st.error("Name and a daily salary above ₹0 are required.")
+            elif has_left and end_date < joining:
+                st.error("End date cannot be before joining date.")
             else:
-                end_date = None
-                
-            salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]))
-            
-            if st.form_submit_button("Save Employee Changes", type="primary", use_container_width=True):
-                if not name.strip() or salary <= 0:
-                    st.error("Name and a daily salary above ₹0 are required.")
-                elif has_left and end_date < joining:
-                    st.error("End date cannot be before joining date.")
-                else:
-                    valid_to_save = True
-                    if has_left and end_date:
-                        # Validation now correctly ONLY checks advances!
-                        advances_df = get_advances(employee_id)
-                        
-                        if not advances_df.empty:
-                            adv_max = pd.to_datetime(advances_df["advance_date"]).dt.date.max()
-                            if pd.notna(adv_max) and end_date < adv_max:
-                                st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because an advance was given on {adv_max.strftime('%d %b %Y')}. Please edit the advance date first.")
-                                valid_to_save = False
+                valid_to_save = True
+                if has_left and end_date:
+                    advances_df = get_advances(employee_id)
+                    
+                    if not advances_df.empty:
+                        adv_max = pd.to_datetime(advances_df["advance_date"]).dt.date.max()
+                        if pd.notna(adv_max) and end_date < adv_max:
+                            st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because an advance was given on {adv_max.strftime('%d %b %Y')}. Please edit the advance date first.")
+                            valid_to_save = False
 
-                    if valid_to_save:
-                        update_employee(employee_id, name, joining, salary, end_date)
-                        st.success("Employee details updated.")
-                        st.rerun()
+                if valid_to_save:
+                    update_employee(employee_id, name, joining, salary, end_date)
+                    st.success("Employee details updated.")
+                    st.rerun()
+                    
         st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
 
         st.divider()
