@@ -379,11 +379,20 @@ def employee_totals(employee_id, as_of=None):
 def dashboard_dataframe(as_of=None):
     employees = get_employees()
     rows = []
+    today = date.today()
     for _, emp in employees.iterrows():
         totals = employee_totals(int(emp["id"]), as_of)
+        
+        end_str = emp.get("end_date")
+        if end_str:
+            is_active = "No" if date.fromisoformat(end_str) <= (as_of or today) else "Yes"
+        else:
+            is_active = "Yes"
+            
         rows.append({
             "ID": int(emp["id"]),
             "Employee": emp["name"],
+            "Active?": is_active,
             "Joining Date": emp["joining_date"],
             "Daily Salary": float(emp["daily_salary"]),
             "Days Worked": totals["worked_days"],
@@ -462,11 +471,15 @@ def quick_actions(employees, key_prefix="home"):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_adv_emp")
             emp = get_employee(choices[employee_name])
             joining = date.fromisoformat(emp["joining_date"])
+            emp_end_date = emp.get("end_date")
+            max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
+            max_allowed_date = max(joining, max_allowed_date)
+
             advance_date = st.date_input(
                 "Advance date",
-                value=date.today(),
+                value=max_allowed_date,
                 min_value=joining,
-                max_value=date.today(),
+                max_value=max_allowed_date,
                 help="You can choose an earlier date if you forgot to enter the advance when it happened.",
                 key=f"{key_prefix}_adv_date",
             )
@@ -482,11 +495,15 @@ def quick_actions(employees, key_prefix="home"):
         employee_id = choices[employee_name]
         emp = get_employee(employee_id)
         joining = date.fromisoformat(emp["joining_date"])
+        emp_end_date = emp.get("end_date")
+        max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
+        max_allowed_date = max(joining, max_allowed_date)
+
         payment_date = st.date_input(
             "Payment date",
-            value=date.today(),
+            value=max_allowed_date,
             min_value=joining,
-            max_value=date.today(),
+            max_value=max_allowed_date,
             key=f"{key_prefix}_pay_date",
         )
         payment_type = st.radio(
@@ -525,20 +542,25 @@ def quick_actions(employees, key_prefix="home"):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_leave_emp")
             emp = get_employee(choices[employee_name])
             joining = date.fromisoformat(emp["joining_date"])
+            emp_end_date = emp.get("end_date")
+            max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
+            max_allowed_date = max(joining, max_allowed_date)
 
             c1, c2 = st.columns(2)
             with c1:
                 start_date = st.date_input(
                     "Start date",
-                    value=date.today(),
+                    value=max_allowed_date,
                     min_value=joining,
+                    max_value=max_allowed_date,
                     key=f"{key_prefix}_leave_start",
                 )
             with c2:
                 end_date = st.date_input(
                     "End date",
-                    value=date.today(),
+                    value=max_allowed_date,
                     min_value=joining,
+                    max_value=max_allowed_date,
                     key=f"{key_prefix}_leave_end",
                 )
 
@@ -577,7 +599,7 @@ def dashboard_page():
     c5.metric("Total Salary Owed", rupee(df["Salary Owed"].sum()))
 
     st.subheader("Employee Balances")
-    shown = df[["Employee", "Days Worked", "Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"]].copy()
+    shown = df[["Employee", "Active?", "Days Worked", "Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"]].copy()
     shown = format_money_columns(shown, ["Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"])
     st.dataframe(shown, use_container_width=True, hide_index=True)
 
@@ -789,9 +811,35 @@ def employee_page():
                 elif has_left and end_date < joining:
                     st.error("End date cannot be before joining date.")
                 else:
-                    update_employee(employee_id, name, joining, salary, end_date)
-                    st.success("Employee details updated.")
-                    st.rerun()
+                    valid_to_save = True
+                    if has_left and end_date:
+                        # Validate end_date is not prior to existing advances/payments/unpaid days
+                        advances_df = get_advances(employee_id)
+                        payments_df = get_payments(employee_id)
+                        unpaid_df = get_unpaid_days(employee_id)
+                        
+                        max_activity_date = None
+                        if not advances_df.empty:
+                            adv_max = pd.to_datetime(advances_df["advance_date"]).dt.date.max()
+                            if max_activity_date is None or adv_max > max_activity_date:
+                                max_activity_date = adv_max
+                        if not payments_df.empty:
+                            pay_max = pd.to_datetime(payments_df["payment_date"]).dt.date.max()
+                            if max_activity_date is None or pay_max > max_activity_date:
+                                max_activity_date = pay_max
+                        if not unpaid_df.empty:
+                            unp_max = pd.to_datetime(unpaid_df["leave_date"]).dt.date.max()
+                            if max_activity_date is None or unp_max > max_activity_date:
+                                max_activity_date = unp_max
+                                
+                        if max_activity_date and end_date < max_activity_date:
+                            st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because there are records (advances, payments, or unpaid days) up to {max_activity_date.strftime('%d %b %Y')}. Please remove or edit those later records first.")
+                            valid_to_save = False
+
+                    if valid_to_save:
+                        update_employee(employee_id, name, joining, salary, end_date)
+                        st.success("Employee details updated.")
+                        st.rerun()
         st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
 
         st.divider()
