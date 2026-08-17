@@ -50,19 +50,21 @@ def rupee(value):
     return f"{sign}₹{whole}.{decimal}"
 
 
-def add_employee(name, joining_date, daily_salary):
+def add_employee(name, joining_date, daily_salary, end_date=None):
     get_supabase().table("employees").insert({
         "name": name.strip(),
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
+        "end_date": end_date.isoformat() if end_date else None,
     }).execute()
 
 
-def update_employee(employee_id, name, joining_date, daily_salary):
+def update_employee(employee_id, name, joining_date, daily_salary, end_date=None):
     get_supabase().table("employees").update({
         "name": name.strip(),
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
+        "end_date": end_date.isoformat() if end_date else None,
     }).eq("id", int(employee_id)).execute()
 
 
@@ -191,7 +193,7 @@ def get_employees():
     )
     return _df(
         response.data,
-        ["id", "name", "joining_date", "daily_salary", "created_at"],
+        ["id", "name", "joining_date", "daily_salary", "end_date", "created_at"],
     )
 
 
@@ -287,7 +289,13 @@ def employment_end_date(employee, as_of=None):
     joining = date.fromisoformat(employee["joining_date"])
     if as_of < joining:
         return None
-    # For historical tracking, calculations run through the selected as-of date.
+    
+    # If the employee has an end date, do not calculate salary beyond it.
+    end_date_str = employee.get("end_date")
+    if end_date_str:
+        emp_end = date.fromisoformat(end_date_str)
+        return min(as_of, emp_end)
+        
     return as_of
 
 
@@ -592,6 +600,13 @@ def add_employee_page():
     with st.form("add_employee", clear_on_submit=True):
         name = st.text_input("Name")
         joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today())
+        
+        has_left = st.checkbox("Employee has stopped working")
+        if has_left:
+            end_date = st.date_input("End date", value=date.today(), max_value=date.today())
+        else:
+            end_date = None
+            
         daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0)
         
         if st.form_submit_button("Add Employee", type="primary", use_container_width=True):
@@ -599,8 +614,10 @@ def add_employee_page():
                 st.error("Enter the employee name.")
             elif daily_salary <= 0:
                 st.error("Daily salary must be more than ₹0.")
+            elif has_left and end_date < joining_date:
+                st.error("End date cannot be before joining date.")
             else:
-                add_employee(name, joining_date, daily_salary)
+                add_employee(name, joining_date, daily_salary, end_date)
                 st.success(f"{name.strip()} added.")
                 st.rerun()
 
@@ -755,13 +772,24 @@ def employee_page():
         with st.form("edit_employee"):
             name = st.text_input("Name", value=emp["name"])
             joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
+            
+            existing_end_date = emp.get("end_date")
+            has_left = st.checkbox("Employee stopped working", value=bool(existing_end_date))
+            if has_left:
+                default_end = date.fromisoformat(existing_end_date) if existing_end_date else date.today()
+                end_date = st.date_input("End date", value=default_end, max_value=date.today())
+            else:
+                end_date = None
+                
             salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]))
             
             if st.form_submit_button("Save Employee Changes", type="primary", use_container_width=True):
                 if not name.strip() or salary <= 0:
                     st.error("Name and a daily salary above ₹0 are required.")
+                elif has_left and end_date < joining:
+                    st.error("End date cannot be before joining date.")
                 else:
-                    update_employee(employee_id, name, joining, salary)
+                    update_employee(employee_id, name, joining, salary, end_date)
                     st.success("Employee details updated.")
                     st.rerun()
         st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
