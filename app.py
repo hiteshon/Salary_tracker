@@ -57,15 +57,17 @@ def add_employee(name, joining_date, daily_salary, active=True):
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
         "active": bool(active),
+        "termination_date": None,
     }).execute()
 
 
-def update_employee(employee_id, name, joining_date, daily_salary, active):
+def update_employee(employee_id, name, joining_date, daily_salary, active, termination_date=None):
     get_supabase().table("employees").update({
         "name": name.strip(),
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
         "active": bool(active),
+        "termination_date": termination_date.isoformat() if termination_date else None,
     }).eq("id", int(employee_id)).execute()
 
 
@@ -195,7 +197,7 @@ def get_employees():
     )
     return _df(
         response.data,
-        ["id", "name", "joining_date", "daily_salary", "active", "created_at"],
+        ["id", "name", "joining_date", "daily_salary", "active", "termination_date", "created_at"],
     )
 
 
@@ -291,8 +293,12 @@ def employment_end_date(employee, as_of=None):
     joining = date.fromisoformat(employee["joining_date"])
     if as_of < joining:
         return None
-    # Inactive status means no salary accrues after today; for historical tracking,
-    # the app has no separate termination date, so calculations run through the selected as-of date.
+
+    termination_raw = employee.get("termination_date")
+    if termination_raw:
+        termination = date.fromisoformat(termination_raw)
+        return min(as_of, termination)
+
     return as_of
 
 
@@ -383,7 +389,11 @@ def dashboard_dataframe(as_of=None):
             "Employee": emp["name"],
             "Joining Date": emp["joining_date"],
             "Daily Salary": float(emp["daily_salary"]),
-            "Status": "Active" if int(emp["active"]) else "Inactive",
+            "Status": (
+                f"Terminated {date.fromisoformat(emp['termination_date']).strftime('%d %b %Y')}"
+                if emp.get("termination_date")
+                else ("Active" if int(emp["active"]) else "Inactive")
+            ),
             "Days Worked": totals["worked_days"],
             "Salary Earned": totals["salary"],
             "Small Advances": totals["small"],
@@ -758,19 +768,62 @@ def employee_page():
                 st.rerun()
 
     with tabs[5]:
+        existing_termination = (
+            date.fromisoformat(emp["termination_date"])
+            if emp.get("termination_date")
+            else None
+        )
+
         with st.form("edit_employee"):
             name = st.text_input("Name", value=emp["name"])
             joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
             salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]))
-            active = st.checkbox("Active", value=bool(emp["active"]))
+
+            terminated = st.checkbox(
+                "Employment terminated / stopped working",
+                value=existing_termination is not None,
+                help="Turn this on to stop salary from accruing after the employee's last working date.",
+            )
+
+            termination_date = None
+            if terminated:
+                termination_date = st.date_input(
+                    "Last working date",
+                    value=existing_termination or date.today(),
+                    min_value=joining,
+                    max_value=date.today(),
+                    help="Salary is counted through this date and stops from the following day.",
+                )
+                active = False
+                st.caption("The employee will automatically be marked inactive when a last working date is saved.")
+            else:
+                active = st.checkbox("Active", value=bool(emp["active"]))
+
             if st.form_submit_button("Save Employee Changes", type="primary", use_container_width=True):
                 if not name.strip() or salary <= 0:
                     st.error("Name and a daily salary above ₹0 are required.")
+                elif terminated and termination_date < joining:
+                    st.error("Last working date cannot be before the joining date.")
                 else:
-                    update_employee(employee_id, name, joining, salary, active)
-                    st.success("Employee details updated.")
+                    update_employee(
+                        employee_id,
+                        name,
+                        joining,
+                        salary,
+                        active,
+                        termination_date if terminated else None,
+                    )
+                    if terminated:
+                        st.success(
+                            f"Employee marked terminated. Salary will stop after {termination_date.strftime('%d %b %Y')}."
+                        )
+                    else:
+                        st.success("Employee details updated.")
                     st.rerun()
-        st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
+        st.caption(
+            "Changing the joining date or daily salary recalculates salary history. "
+            "A last working date stops future salary accrual but keeps all past records."
+        )
 
         st.divider()
         st.warning(
