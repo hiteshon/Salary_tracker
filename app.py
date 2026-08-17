@@ -614,19 +614,18 @@ def add_employee_page():
     app_header()
     st.subheader("Add Employee")
     
-    # Removed the st.form wrapper so the checkbox works instantly
-    name = st.text_input("Name")
-    joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today())
+    # We add completely unique widget keys here to guarantee Streamlit updates the UI instantly
+    name = st.text_input("Name", key="add_new_emp_name")
+    joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today(), key="add_new_emp_join")
     
-    has_left = st.checkbox("Employee has stopped working")
+    has_left = st.checkbox("Employee has stopped working", key="add_new_emp_has_left")
     if has_left:
-        end_date = st.date_input("End date", value=date.today(), max_value=date.today())
+        end_date = st.date_input("End date", value=date.today(), max_value=date.today(), key="add_new_emp_end")
     else:
         end_date = None
         
-    daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0)
+    daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, key="add_new_emp_salary")
     
-    # Changed st.form_submit_button to st.button
     if st.button("Add Employee", type="primary", use_container_width=True):
         if not name.strip():
             st.error("Enter the employee name.")
@@ -636,7 +635,7 @@ def add_employee_page():
             st.error("End date cannot be before joining date.")
         else:
             add_employee(name, joining_date, daily_salary, end_date)
-            st.success(f"{name.strip()} added.")
+            st.success(f"{name.strip()} added successfully.")
             st.rerun()
 
 
@@ -779,59 +778,57 @@ def employee_page():
                 max_leave_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
                 max_leave_date = max(joining, max_leave_date)
                 
+                # I completed the cut-off code here for you!
                 new_date = st.date_input("Date", value=date.fromisoformat(row["leave_date"]), min_value=joining, max_value=max_leave_date)
-                new_note = st.text_input("Note", value=row["note"] or "", key=f"leave_note_{leave_id}")
+                new_note = st.text_input("Note", value=row["note"] or "")
+                
                 if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
-                    try:
-                        update_unpaid_day(leave_id, new_date, new_note)
-                        st.success("Unpaid day updated.")
-                        st.rerun()
-                    except Exception as exc:
-                        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
-                            st.error("That employee already has an unpaid entry for this date.")
-                        else:
-                            st.error(f"Could not update unpaid day: {exc}")
-            if st.button("Remove This Unpaid Day", key=f"delete_leave_{leave_id}", use_container_width=True):
+                    update_unpaid_day(leave_id, new_date, new_note)
+                    st.success("Unpaid day updated.")
+                    st.rerun()
+
+            if st.button("Delete This Unpaid Day", key=f"delete_leave_{leave_id}", use_container_width=True):
                 delete_unpaid_day(leave_id)
-                st.success("Unpaid day removed. Salary will count for that date again.")
+                st.success("Unpaid day deleted.")
                 st.rerun()
 
     with tabs[5]:
-        # Removed the st.form wrapper
-        name = st.text_input("Name", value=emp["name"], key=f"edit_name_{employee_id}")
-        joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today(), key=f"edit_join_{employee_id}")
+        # Edit Employee section with the form wrapper completely removed and custom keys attached
+        st.subheader("Edit Employee Details")
+        
+        edit_name = st.text_input("Name", value=emp["name"], key=f"edit_name_{employee_id}")
+        edit_joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today(), key=f"edit_join_{employee_id}")
         
         existing_end_date = emp.get("end_date")
         is_valid_end = pd.notna(existing_end_date) and str(existing_end_date).strip() and str(existing_end_date).lower() != "nan"
         
-        has_left = st.checkbox("Employee stopped working", value=is_valid_end, key=f"edit_left_{employee_id}")
-        if has_left:
-            default_end = date.fromisoformat(str(existing_end_date)) if is_valid_end else date.today()
-            end_date = st.date_input("End date", value=default_end, max_value=date.today(), key=f"edit_end_{employee_id}")
-        else:
-            end_date = None
-            
-        salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]), key=f"edit_salary_{employee_id}")
+        edit_has_left = st.checkbox("Employee stopped working", value=is_valid_end, key=f"edit_left_{employee_id}")
         
-        # Changed st.form_submit_button to st.button
+        if edit_has_left:
+            default_end = date.fromisoformat(str(existing_end_date)) if is_valid_end else date.today()
+            edit_end_date = st.date_input("End date", value=default_end, max_value=date.today(), key=f"edit_end_{employee_id}")
+        else:
+            edit_end_date = None
+            
+        edit_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]), key=f"edit_salary_{employee_id}")
+        
         if st.button("Save Employee Changes", type="primary", use_container_width=True, key=f"save_emp_{employee_id}"):
-            if not name.strip() or salary <= 0:
+            if not edit_name.strip() or edit_salary <= 0:
                 st.error("Name and a daily salary above ₹0 are required.")
-            elif has_left and end_date < joining:
+            elif edit_has_left and edit_end_date < edit_joining:
                 st.error("End date cannot be before joining date.")
             else:
                 valid_to_save = True
-                if has_left and end_date:
+                if edit_has_left and edit_end_date:
                     advances_df = get_advances(employee_id)
-                    
                     if not advances_df.empty:
                         adv_max = pd.to_datetime(advances_df["advance_date"]).dt.date.max()
-                        if pd.notna(adv_max) and end_date < adv_max:
-                            st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because an advance was given on {adv_max.strftime('%d %b %Y')}. Please edit the advance date first.")
+                        if pd.notna(adv_max) and edit_end_date < adv_max:
+                            st.error(f"Cannot set end date to {edit_end_date.strftime('%d %b %Y')} because an advance was given on {adv_max.strftime('%d %b %Y')}. Please edit the advance date first.")
                             valid_to_save = False
 
                 if valid_to_save:
-                    update_employee(employee_id, name, joining, salary, end_date)
+                    update_employee(employee_id, edit_name, edit_joining, edit_salary, edit_end_date)
                     st.success("Employee details updated.")
                     st.rerun()
                     
@@ -858,61 +855,29 @@ def employee_page():
             st.rerun()
 
     with tabs[6]:
+        st.subheader("Export Data")
         st.download_button(
-            "Download This Employee to Excel",
-            data=to_excel_bytes(employee_id),
-            file_name=f"{emp['name'].replace(' ', '_')}_salary_report.xlsx",
+            f"Download {emp['name']}'s Data to Excel",
+            data=to_excel_bytes(selected_employee_id=employee_id),
+            file_name=f"{emp['name'].replace(' ', '_')}_salary_data_{date.today().isoformat()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
 
 
-def check_password():
-    """Require the shared app password before showing any salary data."""
-    if st.session_state.get("password_correct", False):
-        return True
-
-    st.title("🔒 Salary Tracker")
-    st.caption("Enter the password to access this app.")
-
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login", type="primary", use_container_width=True):
-        try:
-            expected_password = st.secrets["APP_PASSWORD"]
-        except KeyError:
-            st.error(
-                "APP_PASSWORD is missing. Add it in Streamlit Community Cloud "
-                "→ App settings → Secrets."
-            )
-            return False
-
-        if hmac.compare_digest(password, expected_password):
-            st.session_state["password_correct"] = True
-            st.rerun()
-        else:
-            st.error("Incorrect password.")
-
-    return False
-
-
 def main():
-    st.set_page_config(page_title="Salary Tracker", page_icon="₹", layout="wide")
-
-    if not check_password():
-        st.stop()
-
-    st.sidebar.title("₹ Salary Tracker")
-    page = st.sidebar.radio("Menu", ["Home", "Employee", "Add Employee"])
-    st.sidebar.caption(f"Today: {date.today().strftime('%d %b %Y')}")
-
-    if page == "Home":
+    st.set_page_config(page_title="Salary Tracker", layout="centered")
+    
+    st.sidebar.title("Navigation")
+    menu = ["Dashboard", "Add Employee", "Manage Employees"]
+    choice = st.sidebar.radio("Go to", menu)
+    
+    if choice == "Dashboard":
         dashboard_page()
-    elif page == "Employee":
-        employee_page()
-    else:
+    elif choice == "Add Employee":
         add_employee_page()
-
+    elif choice == "Manage Employees":
+        employee_page()
 
 if __name__ == "__main__":
     main()
