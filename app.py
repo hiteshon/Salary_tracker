@@ -7,7 +7,6 @@ import streamlit as st
 from supabase import create_client, Client
 
 
-
 @st.cache_resource
 def get_supabase() -> Client:
     """Create one Supabase client using secrets stored in Streamlit Cloud."""
@@ -51,21 +50,19 @@ def rupee(value):
     return f"{sign}₹{whole}.{decimal}"
 
 
-def add_employee(name, joining_date, daily_salary, active=True):
+def add_employee(name, joining_date, daily_salary):
     get_supabase().table("employees").insert({
         "name": name.strip(),
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
-        "active": bool(active),
     }).execute()
 
 
-def update_employee(employee_id, name, joining_date, daily_salary, active):
+def update_employee(employee_id, name, joining_date, daily_salary):
     get_supabase().table("employees").update({
         "name": name.strip(),
         "joining_date": joining_date.isoformat(),
         "daily_salary": float(daily_salary),
-        "active": bool(active),
     }).eq("id", int(employee_id)).execute()
 
 
@@ -189,13 +186,12 @@ def get_employees():
         get_supabase()
         .table("employees")
         .select("*")
-        .order("active", desc=True)
         .order("name")
         .execute()
     )
     return _df(
         response.data,
-        ["id", "name", "joining_date", "daily_salary", "active", "created_at"],
+        ["id", "name", "joining_date", "daily_salary", "created_at"],
     )
 
 
@@ -291,8 +287,7 @@ def employment_end_date(employee, as_of=None):
     joining = date.fromisoformat(employee["joining_date"])
     if as_of < joining:
         return None
-    # Inactive status means no salary accrues after today; for historical tracking,
-    # the app has no separate termination date, so calculations run through the selected as-of date.
+    # For historical tracking, calculations run through the selected as-of date.
     return as_of
 
 
@@ -383,7 +378,6 @@ def dashboard_dataframe(as_of=None):
             "Employee": emp["name"],
             "Joining Date": emp["joining_date"],
             "Daily Salary": float(emp["daily_salary"]),
-            "Status": "Active" if int(emp["active"]) else "Inactive",
             "Days Worked": totals["worked_days"],
             "Salary Earned": totals["salary"],
             "Small Advances": totals["small"],
@@ -575,7 +569,7 @@ def dashboard_page():
     c5.metric("Total Salary Owed", rupee(df["Salary Owed"].sum()))
 
     st.subheader("Employee Balances")
-    shown = df[["Employee", "Days Worked", "Daily Salary", "Status", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"]].copy()
+    shown = df[["Employee", "Days Worked", "Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"]].copy()
     shown = format_money_columns(shown, ["Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"])
     st.dataframe(shown, use_container_width=True, hide_index=True)
 
@@ -599,14 +593,14 @@ def add_employee_page():
         name = st.text_input("Name")
         joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today())
         daily_salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0)
-        active = st.checkbox("Active", value=True)
+        
         if st.form_submit_button("Add Employee", type="primary", use_container_width=True):
             if not name.strip():
                 st.error("Enter the employee name.")
             elif daily_salary <= 0:
                 st.error("Daily salary must be more than ₹0.")
             else:
-                add_employee(name, joining_date, daily_salary, active)
+                add_employee(name, joining_date, daily_salary)
                 st.success(f"{name.strip()} added.")
                 st.rerun()
 
@@ -762,12 +756,12 @@ def employee_page():
             name = st.text_input("Name", value=emp["name"])
             joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
             salary = st.number_input("Daily salary (₹)", min_value=0.0, step=50.0, value=float(emp["daily_salary"]))
-            active = st.checkbox("Active", value=bool(emp["active"]))
+            
             if st.form_submit_button("Save Employee Changes", type="primary", use_container_width=True):
                 if not name.strip() or salary <= 0:
                     st.error("Name and a daily salary above ₹0 are required.")
                 else:
-                    update_employee(employee_id, name, joining, salary, active)
+                    update_employee(employee_id, name, joining, salary)
                     st.success("Employee details updated.")
                     st.rerun()
         st.caption("Changing the joining date or daily salary recalculates the employee's salary history using the new details.")
@@ -800,7 +794,6 @@ def employee_page():
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-
 
 
 def check_password():
