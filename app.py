@@ -7,6 +7,29 @@ import streamlit as st
 from supabase import create_client, Client
 
 
+def check_password():
+    """Returns `True` if the user had the correct password."""
+    def password_entered():
+        # Grabs the password from Streamlit secrets, defaults to "admin" if missing
+        expected_password = st.secrets.get("password", "admin")
+        
+        if st.session_state["password_input"] == expected_password:
+            st.session_state["password_correct"] = True
+            del st.session_state["password_input"]  # Clean up memory
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.title("🔒 Login Required")
+    st.text_input("Enter Password", type="password", on_change=password_entered, key="password_input")
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Incorrect password.")
+    return False
+
+
 @st.cache_resource
 def get_supabase() -> Client:
     """Create one Supabase client using secrets stored in Streamlit Cloud."""
@@ -22,10 +45,25 @@ def get_supabase() -> Client:
 
 
 def _df(rows, columns=None):
-    """Convert Supabase response rows to a DataFrame with stable columns."""
+    """Convert Supabase response rows to a DataFrame with stable, guaranteed columns."""
     if rows:
-        return pd.DataFrame(rows)
+        df = pd.DataFrame(rows)
+        # Guarantee all expected columns exist to prevent KeyError or missing data bugs
+        if columns:
+            for col in columns:
+                if col not in df.columns:
+                    df[col] = None
+        return df
     return pd.DataFrame(columns=columns or [])
+
+
+def is_valid_date_string(d):
+    """Bulletproof check to catch pandas NaN, NaT, None, or literal string equivalents."""
+    if pd.isna(d) or d is None:
+        return False
+    # Catch string artifacts from database/pandas conversions
+    s = str(d).strip().lower()
+    return s not in ["", "nan", "none", "nat", "null"]
 
 
 def classify_advance(amount):
@@ -284,7 +322,7 @@ def employment_end_date(employee, as_of=None):
         return None
     
     end_date_str = employee.get("end_date")
-    if pd.notna(end_date_str) and str(end_date_str).strip() and str(end_date_str).lower() != "nan":
+    if is_valid_date_string(end_date_str):
         emp_end = date.fromisoformat(str(end_date_str))
         return min(as_of, emp_end)
         
@@ -376,7 +414,7 @@ def dashboard_dataframe(as_of=None):
         totals = employee_totals(int(emp["id"]), as_of)
         
         end_str = emp.get("end_date")
-        if pd.notna(end_str) and str(end_str).strip() and str(end_str).lower() != "nan":
+        if is_valid_date_string(end_str):
             is_active = "No" if date.fromisoformat(str(end_str)) <= (as_of or today) else "Yes"
         else:
             is_active = "Yes"
@@ -465,7 +503,7 @@ def quick_actions(employees, key_prefix="home"):
             joining = date.fromisoformat(emp["joining_date"])
             
             emp_end_date = emp.get("end_date")
-            is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+            is_valid_end = is_valid_date_string(emp_end_date)
             max_allowed_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
             max_allowed_date = max(joining, max_allowed_date)
 
@@ -490,7 +528,6 @@ def quick_actions(employees, key_prefix="home"):
         emp = get_employee(employee_id)
         joining = date.fromisoformat(emp["joining_date"])
         
-        # Payments can be processed anytime up to today, regardless of end_date
         payment_date = st.date_input(
             "Payment date",
             value=date.today(),
@@ -536,7 +573,7 @@ def quick_actions(employees, key_prefix="home"):
             joining = date.fromisoformat(emp["joining_date"])
             
             emp_end_date = emp.get("end_date")
-            is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+            is_valid_end = is_valid_date_string(emp_end_date)
             max_allowed_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
             max_allowed_date = max(joining, max_allowed_date)
 
@@ -614,7 +651,6 @@ def add_employee_page():
     app_header()
     st.subheader("Add Employee")
     
-    # We add completely unique widget keys here to guarantee Streamlit updates the UI instantly
     name = st.text_input("Name", key="add_new_emp_name")
     joining_date = st.date_input("Joining date", value=date.today(), max_value=date.today(), key="add_new_emp_join")
     
@@ -697,7 +733,7 @@ def employee_page():
             joining = date.fromisoformat(emp["joining_date"])
             with st.form(f"change_adv_form_{adv_id}"):
                 emp_end_date = emp.get("end_date")
-                is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+                is_valid_end = is_valid_date_string(emp_end_date)
                 max_adv_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
                 max_adv_date = max(joining, max_adv_date)
                 
@@ -774,11 +810,10 @@ def employee_page():
             joining = date.fromisoformat(emp["joining_date"])
             with st.form(f"change_leave_form_{leave_id}"):
                 emp_end_date = emp.get("end_date")
-                is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+                is_valid_end = is_valid_date_string(emp_end_date)
                 max_leave_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
                 max_leave_date = max(joining, max_leave_date)
                 
-                # I completed the cut-off code here for you!
                 new_date = st.date_input("Date", value=date.fromisoformat(row["leave_date"]), min_value=joining, max_value=max_leave_date)
                 new_note = st.text_input("Note", value=row["note"] or "")
                 
@@ -793,14 +828,13 @@ def employee_page():
                 st.rerun()
 
     with tabs[5]:
-        # Edit Employee section with the form wrapper completely removed and custom keys attached
         st.subheader("Edit Employee Details")
         
         edit_name = st.text_input("Name", value=emp["name"], key=f"edit_name_{employee_id}")
         edit_joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today(), key=f"edit_join_{employee_id}")
         
         existing_end_date = emp.get("end_date")
-        is_valid_end = pd.notna(existing_end_date) and str(existing_end_date).strip() and str(existing_end_date).lower() != "nan"
+        is_valid_end = is_valid_date_string(existing_end_date)
         
         edit_has_left = st.checkbox("Employee stopped working", value=is_valid_end, key=f"edit_left_{employee_id}")
         
@@ -868,6 +902,10 @@ def employee_page():
 def main():
     st.set_page_config(page_title="Salary Tracker", layout="centered")
     
+    # Enforce password logic before rendering anything else
+    if not check_password():
+        return
+        
     st.sidebar.title("Navigation")
     menu = ["Dashboard", "Add Employee", "Manage Employees"]
     choice = st.sidebar.radio("Go to", menu)
