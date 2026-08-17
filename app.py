@@ -138,6 +138,29 @@ def delete_advance(advance_id):
     get_supabase().table("advances").delete().eq("id", int(advance_id)).execute()
 
 
+def add_payment(employee_id, payment_date, amount, payment_type, note=""):
+    get_supabase().table("payments").insert({
+        "employee_id": int(employee_id),
+        "payment_date": payment_date.isoformat(),
+        "amount": float(amount),
+        "payment_type": payment_type,
+        "note": note.strip(),
+    }).execute()
+
+
+def update_payment(payment_id, payment_date, amount, payment_type, note=""):
+    get_supabase().table("payments").update({
+        "payment_date": payment_date.isoformat(),
+        "amount": float(amount),
+        "payment_type": payment_type,
+        "note": note.strip(),
+    }).eq("id", int(payment_id)).execute()
+
+
+def delete_payment(payment_id):
+    get_supabase().table("payments").delete().eq("id", int(payment_id)).execute()
+
+
 def update_unpaid_day(unpaid_id, leave_date, note=""):
     get_supabase().table("unpaid_days").update({
         "leave_date": leave_date.isoformat(),
@@ -154,6 +177,7 @@ def delete_employee(employee_id):
 
     # Delete related records first so no employee history is left behind.
     get_supabase().table("advances").delete().eq("employee_id", employee_id).execute()
+    get_supabase().table("payments").delete().eq("employee_id", employee_id).execute()
     get_supabase().table("unpaid_days").delete().eq("employee_id", employee_id).execute()
 
     # Finally delete the employee record itself.
@@ -235,6 +259,33 @@ def get_advances(employee_id=None):
     return df
 
 
+def get_payments(employee_id=None):
+    query = (
+        get_supabase()
+        .table("payments")
+        .select("*")
+        .order("payment_date", desc=True)
+        .order("id", desc=True)
+    )
+    if employee_id is not None:
+        query = query.eq("employee_id", int(employee_id))
+
+    response = query.execute()
+    df = _df(
+        response.data,
+        ["id", "employee_id", "payment_date", "amount", "payment_type", "note", "created_at"],
+    )
+
+    if employee_id is None and not df.empty:
+        employees = get_employees()
+        if not employees.empty:
+            names = employees[["id", "name"]].rename(columns={"id": "employee_id"})
+            df = df.merge(names, on="employee_id", how="left")
+            ordered = ["id", "employee_id", "name", "payment_date", "amount", "payment_type", "note"]
+            df = df[[c for c in ordered if c in df.columns]]
+    return df
+
+
 def employment_end_date(employee, as_of=None):
     as_of = as_of or date.today()
     joining = date.fromisoformat(employee["joining_date"])
@@ -253,7 +304,7 @@ def employee_daily_tracker(employee_id, as_of=None):
     joining = date.fromisoformat(employee["joining_date"])
     end = employment_end_date(employee, as_of)
     if end is None:
-        return pd.DataFrame(columns=["Date", "Status", "Salary Earned", "Advance", "Advance Type", "Balance Change", "Running Balance"])
+        return pd.DataFrame(columns=["Date", "Status", "Salary Earned", "Advance", "Advance Type", "Payment", "Balance Change", "Running Balance"])
 
     unpaid_df = get_unpaid_days(employee_id)
     unpaid = {date.fromisoformat(d): n for d, n in zip(unpaid_df["leave_date"], unpaid_df["note"])} if not unpaid_df.empty else {}
@@ -265,6 +316,13 @@ def employee_daily_tracker(employee_id, as_of=None):
             d = date.fromisoformat(row["advance_date"])
             adv_by_date.setdefault(d, []).append((float(row["amount"]), row["category"], row.get("note", "")))
 
+    payment_df = get_payments(employee_id)
+    payments_by_date = {}
+    if not payment_df.empty:
+        for _, row in payment_df.iterrows():
+            d = date.fromisoformat(row["payment_date"])
+            payments_by_date.setdefault(d, []).append(float(row["amount"]))
+
     rows = []
     running = 0.0
     current = joining
@@ -273,8 +331,9 @@ def employee_daily_tracker(employee_id, as_of=None):
         advances = adv_by_date.get(current, [])
         advance_total = sum(x[0] for x in advances)
         types = ", ".join(sorted(set(x[1] for x in advances))) if advances else ""
+        payment_total = sum(payments_by_date.get(current, []))
         status = "Unpaid holiday/leave" if current in unpaid else "Salary counted"
-        change = salary - advance_total
+        change = salary - advance_total - payment_total
         running += change
         rows.append({
             "Date": current,
@@ -282,6 +341,7 @@ def employee_daily_tracker(employee_id, as_of=None):
             "Salary Earned": salary,
             "Advance": advance_total,
             "Advance Type": types,
+            "Payment": payment_total,
             "Balance Change": change,
             "Running Balance": running,
         })
@@ -291,19 +351,25 @@ def employee_daily_tracker(employee_id, as_of=None):
 
 def employee_totals(employee_id, as_of=None):
     tracker = employee_daily_tracker(employee_id, as_of)
-    advances = get_advances(employee_id)
     salary = float(tracker["Salary Earned"].sum()) if not tracker.empty else 0.0
     worked_days = int((tracker["Status"] == "Salary counted").sum()) if not tracker.empty else 0
+    total_adv = float(tracker["Advance"].sum()) if not tracker.empty else 0.0
+    total_payments = float(tracker["Payment"].sum()) if not tracker.empty else 0.0
+
+    advances = get_advances(employee_id)
+    if as_of is not None and not advances.empty:
+        advances = advances[pd.to_datetime(advances["advance_date"]).dt.date <= as_of]
     small = float(advances.loc[advances["category"] == "Small Advance", "amount"].sum()) if not advances.empty else 0.0
     large = float(advances.loc[advances["category"] == "Large Advance", "amount"].sum()) if not advances.empty else 0.0
-    total_adv = small + large
+
     return {
         "salary": salary,
         "worked_days": worked_days,
         "small": small,
         "large": large,
         "advances": total_adv,
-        "owed": salary - total_adv,
+        "payments": total_payments,
+        "owed": salary - total_adv - total_payments,
     }
 
 
@@ -322,6 +388,7 @@ def dashboard_dataframe(as_of=None):
             "Salary Earned": totals["salary"],
             "Small Advances": totals["small"],
             "Large Advances": totals["large"],
+            "Payments": totals["payments"],
             "Salary Owed": totals["owed"],
         })
     return pd.DataFrame(rows)
@@ -340,21 +407,25 @@ def to_excel_bytes(selected_employee_id=None):
     summary = dashboard_dataframe()
     employees = get_employees()
     advances = get_advances()
+    payments = get_payments()
     unpaid = get_unpaid_days()
 
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary.to_excel(writer, index=False, sheet_name="Overall Summary")
         employees.to_excel(writer, index=False, sheet_name="Employees")
         advances.to_excel(writer, index=False, sheet_name="All Advances")
+        payments.to_excel(writer, index=False, sheet_name="All Payments")
         unpaid.to_excel(writer, index=False, sheet_name="Unpaid Days")
 
         if selected_employee_id:
             emp = get_employee(selected_employee_id)
             tracker = employee_daily_tracker(selected_employee_id)
             emp_adv = get_advances(selected_employee_id)
+            emp_payments = get_payments(selected_employee_id)
             emp_leave = get_unpaid_days(selected_employee_id)
             tracker.to_excel(writer, index=False, sheet_name="Employee Daily Tracker")
             emp_adv.to_excel(writer, index=False, sheet_name="Employee Advances")
+            emp_payments.to_excel(writer, index=False, sheet_name="Employee Payments")
             emp_leave.to_excel(writer, index=False, sheet_name="Employee Unpaid Days")
 
     output.seek(0)
@@ -377,7 +448,12 @@ def quick_actions(employees, key_prefix="home"):
 
     choices = employee_choices(employees)
     st.subheader("Quick Entry")
-    action = st.radio("What do you want to add?", ["Advance", "Unpaid day / range"], horizontal=True, key=f"{key_prefix}_action")
+    action = st.radio(
+        "What do you want to add?",
+        ["Advance", "Payment", "Unpaid day / range"],
+        horizontal=True,
+        key=f"{key_prefix}_action",
+    )
 
     if action == "Advance":
         with st.form(f"{key_prefix}_advance", clear_on_submit=True):
@@ -398,6 +474,50 @@ def quick_actions(employees, key_prefix="home"):
                 category = add_advance(choices[employee_name], advance_date, amount, note)
                 st.success(f"Advance saved for {advance_date.strftime('%d %b %Y')} as {category}.")
                 st.rerun()
+
+    elif action == "Payment":
+        employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_pay_emp")
+        employee_id = choices[employee_name]
+        emp = get_employee(employee_id)
+        joining = date.fromisoformat(emp["joining_date"])
+        payment_date = st.date_input(
+            "Payment date",
+            value=date.today(),
+            min_value=joining,
+            max_value=date.today(),
+            key=f"{key_prefix}_pay_date",
+        )
+        payment_type = st.radio(
+            "Payment type",
+            ["Partial payment", "Full settlement"],
+            horizontal=True,
+            key=f"{key_prefix}_pay_type",
+        )
+        balance_on_date = employee_totals(employee_id, payment_date)["owed"]
+        st.info(f"Salary owed on {payment_date.strftime('%d %b %Y')}: {rupee(balance_on_date)}")
+
+        with st.form(f"{key_prefix}_payment", clear_on_submit=True):
+            if payment_type == "Partial payment":
+                amount = st.number_input("Payment amount (₹)", min_value=1.0, step=100.0, key=f"{key_prefix}_pay_amount")
+            else:
+                amount = max(float(balance_on_date), 0.0)
+                st.metric("Full settlement amount", rupee(amount))
+                st.caption("This pays the entire outstanding salary through the selected payment date. Salary earned after this date starts building again from ₹0.")
+
+            note = st.text_input("Note (optional)", key=f"{key_prefix}_pay_note")
+            if st.form_submit_button("Save Payment", type="primary", use_container_width=True):
+                if amount <= 0:
+                    st.error("There is no positive salary balance to settle on this date.")
+                elif payment_type == "Partial payment" and amount > balance_on_date:
+                    st.error(f"Payment cannot be more than the salary owed ({rupee(balance_on_date)}).")
+                else:
+                    add_payment(employee_id, payment_date, amount, payment_type, note)
+                    if payment_type == "Full settlement":
+                        st.success(f"Full settlement of {rupee(amount)} saved. Balance is ₹0.00 on {payment_date.strftime('%d %b %Y')}.")
+                    else:
+                        st.success(f"Payment of {rupee(amount)} saved.")
+                    st.rerun()
+
     else:
         with st.form(f"{key_prefix}_leave", clear_on_submit=True):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_leave_emp")
@@ -447,15 +567,16 @@ def dashboard_page():
         st.info("No employees yet. Choose 'Add Employee' from the left menu.")
         return
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Employees", len(df))
     c2.metric("Small Advances", rupee(df["Small Advances"].sum()))
     c3.metric("Large Advances", rupee(df["Large Advances"].sum()))
-    c4.metric("Total Salary Owed", rupee(df["Salary Owed"].sum()))
+    c4.metric("Payments", rupee(df["Payments"].sum()))
+    c5.metric("Total Salary Owed", rupee(df["Salary Owed"].sum()))
 
     st.subheader("Employee Balances")
-    shown = df[["Employee", "Days Worked", "Daily Salary", "Status", "Salary Earned", "Small Advances", "Large Advances", "Salary Owed"]].copy()
-    shown = format_money_columns(shown, ["Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Salary Owed"])
+    shown = df[["Employee", "Days Worked", "Daily Salary", "Status", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"]].copy()
+    shown = format_money_columns(shown, ["Daily Salary", "Salary Earned", "Small Advances", "Large Advances", "Payments", "Salary Owed"])
     st.dataframe(shown, use_container_width=True, hide_index=True)
 
     st.divider()
@@ -503,14 +624,15 @@ def employee_page():
     emp = get_employee(employee_id)
     totals = employee_totals(employee_id)
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Salary Earned", rupee(totals["salary"]))
     c2.metric("Total Advances", rupee(totals["advances"]))
-    c3.metric("Salary Owed", rupee(totals["owed"]))
+    c3.metric("Payments Made", rupee(totals["payments"]))
+    c4.metric("Salary Owed", rupee(totals["owed"]))
 
     st.caption(f"Small advances: {rupee(totals['small'])}  •  Large advances: {rupee(totals['large'])}")
 
-    tabs = st.tabs(["Add Entry", "Daily Tracker", "Advances", "Unpaid Days", "Edit Employee", "Export"])
+    tabs = st.tabs(["Add Entry", "Daily Tracker", "Advances", "Payments", "Unpaid Days", "Edit Employee", "Export"])
 
     with tabs[0]:
         quick_actions(employees[employees["id"] == employee_id], f"employee_{employee_id}")
@@ -522,7 +644,7 @@ def employee_page():
         else:
             display = tracker.sort_values("Date", ascending=False).copy()
             display["Date"] = pd.to_datetime(display["Date"]).dt.strftime("%d %b %Y")
-            display = format_money_columns(display, ["Salary Earned", "Advance", "Balance Change", "Running Balance"])
+            display = format_money_columns(display, ["Salary Earned", "Advance", "Payment", "Balance Change", "Running Balance"])
             st.dataframe(display, use_container_width=True, hide_index=True)
 
     with tabs[2]:
@@ -560,6 +682,45 @@ def employee_page():
                 st.rerun()
 
     with tabs[3]:
+        payments = get_payments(employee_id)
+        if payments.empty:
+            st.info("No salary payments recorded.")
+        else:
+            display = payments[["payment_date", "amount", "payment_type", "note"]].copy()
+            display["payment_date"] = pd.to_datetime(display["payment_date"]).dt.strftime("%d %b %Y")
+            display["amount"] = display["amount"].apply(rupee)
+            display.columns = ["Date", "Amount", "Type", "Note"]
+            st.dataframe(display, use_container_width=True, hide_index=True)
+
+            st.markdown("**Change or delete a payment**")
+            options = {
+                f"{date.fromisoformat(r['payment_date']).strftime('%d %b %Y')} — {rupee(r['amount'])}": int(r["id"])
+                for _, r in payments.iterrows()
+            }
+            selected = st.selectbox("Choose payment", list(options), key=f"edit_payment_{employee_id}")
+            payment_id = options[selected]
+            row = payments[payments["id"] == payment_id].iloc[0]
+            joining = date.fromisoformat(emp["joining_date"])
+            with st.form(f"change_payment_form_{payment_id}"):
+                new_date = st.date_input("Date", value=date.fromisoformat(row["payment_date"]), min_value=joining, max_value=date.today())
+                new_amount = st.number_input("Amount (₹)", min_value=1.0, step=100.0, value=float(row["amount"]))
+                existing_type = row.get("payment_type") or "Partial payment"
+                new_type = st.selectbox(
+                    "Type",
+                    ["Partial payment", "Full settlement"],
+                    index=0 if existing_type == "Partial payment" else 1,
+                )
+                new_note = st.text_input("Note", value=row["note"] or "", key=f"payment_note_{payment_id}")
+                if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
+                    update_payment(payment_id, new_date, new_amount, new_type, new_note)
+                    st.success("Payment updated.")
+                    st.rerun()
+            if st.button("Delete This Payment", key=f"delete_payment_{payment_id}", use_container_width=True):
+                delete_payment(payment_id)
+                st.success("Payment deleted.")
+                st.rerun()
+
+    with tabs[4]:
         leaves = get_unpaid_days(employee_id)
         if leaves.empty:
             st.info("No unpaid days recorded.")
@@ -596,7 +757,7 @@ def employee_page():
                 st.success("Unpaid day removed. Salary will count for that date again.")
                 st.rerun()
 
-    with tabs[4]:
+    with tabs[5]:
         with st.form("edit_employee"):
             name = st.text_input("Name", value=emp["name"])
             joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
@@ -614,7 +775,7 @@ def employee_page():
         st.divider()
         st.warning(
             "Deleting an employee is permanent and will also delete all of their "
-            "advances and unpaid-day records."
+            "advances, payments, and unpaid-day records."
         )
         confirm_delete = st.checkbox(
             f"I confirm that I want to permanently delete {emp['name']}",
@@ -631,7 +792,7 @@ def employee_page():
             st.success(f"{emp['name']} has been deleted.")
             st.rerun()
 
-    with tabs[5]:
+    with tabs[6]:
         st.download_button(
             "Download This Employee to Excel",
             data=to_excel_bytes(employee_id),
