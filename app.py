@@ -81,8 +81,6 @@ def add_advance(employee_id, advance_date, amount, note=""):
 
 
 def add_unpaid_day(employee_id, leave_date, note=""):
-    # employee_id + leave_date is unique in Supabase.
-    # Upsert makes this behave like the old SQLite INSERT OR REPLACE.
     get_supabase().table("unpaid_days").upsert({
         "employee_id": int(employee_id),
         "leave_date": leave_date.isoformat(),
@@ -91,7 +89,6 @@ def add_unpaid_day(employee_id, leave_date, note=""):
 
 
 def add_unpaid_range(employee_id, start_date, end_date, note=""):
-    """Mark every calendar day from start_date through end_date as unpaid."""
     if end_date < start_date:
         raise ValueError("End date cannot be before start date.")
 
@@ -173,13 +170,9 @@ def delete_unpaid_day(unpaid_id):
 
 def delete_employee(employee_id):
     employee_id = int(employee_id)
-
-    # Delete related records first so no employee history is left behind.
     get_supabase().table("advances").delete().eq("employee_id", employee_id).execute()
     get_supabase().table("payments").delete().eq("employee_id", employee_id).execute()
     get_supabase().table("unpaid_days").delete().eq("employee_id", employee_id).execute()
-
-    # Finally delete the employee record itself.
     get_supabase().table("employees").delete().eq("id", employee_id).execute()
 
 
@@ -290,10 +283,8 @@ def employment_end_date(employee, as_of=None):
     if as_of < joining:
         return None
     
-    # If the employee has an end date, do not calculate salary beyond it.
     end_date_str = employee.get("end_date")
-    # Added the pd.notna() check here to prevent NaN errors!
-    if pd.notna(end_date_str) and str(end_date_str).strip():
+    if pd.notna(end_date_str) and str(end_date_str).strip() and str(end_date_str).lower() != "nan":
         emp_end = date.fromisoformat(str(end_date_str))
         return min(as_of, emp_end)
         
@@ -385,8 +376,7 @@ def dashboard_dataframe(as_of=None):
         totals = employee_totals(int(emp["id"]), as_of)
         
         end_str = emp.get("end_date")
-        # Use pd.notna() to ensure we don't try to process NaN/None values
-        if pd.notna(end_str) and str(end_str).strip():
+        if pd.notna(end_str) and str(end_str).strip() and str(end_str).lower() != "nan":
             is_active = "No" if date.fromisoformat(str(end_str)) <= (as_of or today) else "Yes"
         else:
             is_active = "Yes"
@@ -451,7 +441,6 @@ def app_header():
 
 
 def employee_choices(employees):
-    # Adding the ID ensures every dropdown option is unique, even for identical names
     return {f"{r['name']} (ID: {r['id']})": int(r["id"]) for _, r in employees.iterrows()}
 
 
@@ -474,8 +463,10 @@ def quick_actions(employees, key_prefix="home"):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_adv_emp")
             emp = get_employee(choices[employee_name])
             joining = date.fromisoformat(emp["joining_date"])
+            
             emp_end_date = emp.get("end_date")
-            max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
+            is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+            max_allowed_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
             max_allowed_date = max(joining, max_allowed_date)
 
             advance_date = st.date_input(
@@ -498,15 +489,13 @@ def quick_actions(employees, key_prefix="home"):
         employee_id = choices[employee_name]
         emp = get_employee(employee_id)
         joining = date.fromisoformat(emp["joining_date"])
-        emp_end_date = emp.get("end_date")
-        max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
-        max_allowed_date = max(joining, max_allowed_date)
-
+        
+        # Payments can be processed anytime up to today, regardless of end_date
         payment_date = st.date_input(
             "Payment date",
-            value=max_allowed_date,
+            value=date.today(),
             min_value=joining,
-            max_value=max_allowed_date,
+            max_value=date.today(),
             key=f"{key_prefix}_pay_date",
         )
         payment_type = st.radio(
@@ -545,8 +534,10 @@ def quick_actions(employees, key_prefix="home"):
             employee_name = st.selectbox("Employee", list(choices), key=f"{key_prefix}_leave_emp")
             emp = get_employee(choices[employee_name])
             joining = date.fromisoformat(emp["joining_date"])
+            
             emp_end_date = emp.get("end_date")
-            max_allowed_date = date.fromisoformat(emp_end_date) if emp_end_date else date.today()
+            is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+            max_allowed_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
             max_allowed_date = max(joining, max_allowed_date)
 
             c1, c2 = st.columns(2)
@@ -704,7 +695,12 @@ def employee_page():
             row = advances[advances["id"] == adv_id].iloc[0]
             joining = date.fromisoformat(emp["joining_date"])
             with st.form(f"change_adv_form_{adv_id}"):
-                new_date = st.date_input("Date", value=date.fromisoformat(row["advance_date"]), min_value=joining, max_value=date.today())
+                emp_end_date = emp.get("end_date")
+                is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+                max_adv_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
+                max_adv_date = max(joining, max_adv_date)
+                
+                new_date = st.date_input("Date", value=date.fromisoformat(row["advance_date"]), min_value=joining, max_value=max_adv_date)
                 new_amount = st.number_input("Amount (₹)", min_value=1.0, step=100.0, value=float(row["amount"]))
                 new_note = st.text_input("Note", value=row["note"] or "")
                 save = st.form_submit_button("Save Changes", type="primary", use_container_width=True)
@@ -776,7 +772,12 @@ def employee_page():
             row = leaves[leaves["id"] == leave_id].iloc[0]
             joining = date.fromisoformat(emp["joining_date"])
             with st.form(f"change_leave_form_{leave_id}"):
-                new_date = st.date_input("Date", value=date.fromisoformat(row["leave_date"]), min_value=joining, max_value=date.today())
+                emp_end_date = emp.get("end_date")
+                is_valid_end = pd.notna(emp_end_date) and str(emp_end_date).strip() and str(emp_end_date).lower() != "nan"
+                max_leave_date = date.fromisoformat(str(emp_end_date)) if is_valid_end else date.today()
+                max_leave_date = max(joining, max_leave_date)
+                
+                new_date = st.date_input("Date", value=date.fromisoformat(row["leave_date"]), min_value=joining, max_value=max_leave_date)
                 new_note = st.text_input("Note", value=row["note"] or "", key=f"leave_note_{leave_id}")
                 if st.form_submit_button("Save Changes", type="primary", use_container_width=True):
                     try:
@@ -799,9 +800,11 @@ def employee_page():
             joining = st.date_input("Joining date", value=date.fromisoformat(emp["joining_date"]), max_value=date.today())
             
             existing_end_date = emp.get("end_date")
-            has_left = st.checkbox("Employee stopped working", value=bool(existing_end_date))
+            is_valid_end = pd.notna(existing_end_date) and str(existing_end_date).strip() and str(existing_end_date).lower() != "nan"
+            
+            has_left = st.checkbox("Employee stopped working", value=is_valid_end)
             if has_left:
-                default_end = date.fromisoformat(existing_end_date) if existing_end_date else date.today()
+                default_end = date.fromisoformat(str(existing_end_date)) if is_valid_end else date.today()
                 end_date = st.date_input("End date", value=default_end, max_value=date.today())
             else:
                 end_date = None
@@ -816,28 +819,14 @@ def employee_page():
                 else:
                     valid_to_save = True
                     if has_left and end_date:
-                        # Validate end_date is not prior to existing advances/payments/unpaid days
+                        # Validation now correctly ONLY checks advances!
                         advances_df = get_advances(employee_id)
-                        payments_df = get_payments(employee_id)
-                        unpaid_df = get_unpaid_days(employee_id)
                         
-                        max_activity_date = None
                         if not advances_df.empty:
                             adv_max = pd.to_datetime(advances_df["advance_date"]).dt.date.max()
-                            if max_activity_date is None or adv_max > max_activity_date:
-                                max_activity_date = adv_max
-                        if not payments_df.empty:
-                            pay_max = pd.to_datetime(payments_df["payment_date"]).dt.date.max()
-                            if max_activity_date is None or pay_max > max_activity_date:
-                                max_activity_date = pay_max
-                        if not unpaid_df.empty:
-                            unp_max = pd.to_datetime(unpaid_df["leave_date"]).dt.date.max()
-                            if max_activity_date is None or unp_max > max_activity_date:
-                                max_activity_date = unp_max
-                                
-                        if max_activity_date and end_date < max_activity_date:
-                            st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because there are records (advances, payments, or unpaid days) up to {max_activity_date.strftime('%d %b %Y')}. Please remove or edit those later records first.")
-                            valid_to_save = False
+                            if pd.notna(adv_max) and end_date < adv_max:
+                                st.error(f"Cannot set end date to {end_date.strftime('%d %b %Y')} because an advance was given on {adv_max.strftime('%d %b %Y')}. Please edit the advance date first.")
+                                valid_to_save = False
 
                     if valid_to_save:
                         update_employee(employee_id, name, joining, salary, end_date)
